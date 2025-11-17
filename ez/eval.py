@@ -163,11 +163,11 @@ def eval(agent, model, n_episodes, save_path, config, max_steps=None, use_pb=Fal
 
             # Receive next observation and encode the true next latent s_{t+1}
             next_stacked_obs = formalize_obs_lst([stack_obs_windows[i]], image_based=config.env.image_based) # shape: (1, C_in, H_in, W_in)
-            s_tp1 = model.representation(next_stacked_obs)
+            s_tp1 = model.do_representation(next_stacked_obs)
 
             # Predict next latent with dynamics: ŝ_{t+1} = G(s_t, a_t) ---
             action_tensor = torch.tensor([[action]], device=s_t.device, dtype=torch.long)
-            s_hat_tp1 = model.dynamics(s_t, action_tensor)
+            s_hat_tp1 = model.do_dynamics(s_t, action_tensor)
 
             if i == 0:
                 latent_logs.append({
