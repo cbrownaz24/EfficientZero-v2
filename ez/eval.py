@@ -93,6 +93,10 @@ def eval(agent, model, n_episodes, save_path, config, max_steps=None, use_pb=Fal
     step = 0
     frames = [[] for _ in range(n_episodes)]
     rewards = [[] for _ in range(n_episodes)]
+
+    # buffer to store latent data for analysis
+    latent_logs = []
+
     while not dones.all():
         # debug
         if verbose:
@@ -137,6 +141,9 @@ def eval(agent, model, n_episodes, save_path, config, max_steps=None, use_pb=Fal
                 continue
 
             action = best_actions[i]
+
+            s_t = states[i:i+1] # (n_episodes, C, H_lat, W_lat)
+
             obs, reward, done, info = envs[i].step(action)
             frames[i].append(obs if config.env.image_based else envs[i].render(mode='rgb_array'))
             # rewards[i].append(reward)
@@ -153,6 +160,24 @@ def eval(agent, model, n_episodes, save_path, config, max_steps=None, use_pb=Fal
 
             del stack_obs_windows[i][0]
             stack_obs_windows[i].append(obs)
+
+            # Receive next observation and encode the true next latent s_{t+1}
+            next_stacked_obs = formalize_obs_lst([stack_obs_windows[i]], image_based=config.env.image_based) # shape: (1, C_in, H_in, W_in)
+            s_tp1 = model.representation(next_stacked_obs)
+
+            # Predict next latent with dynamics: ŝ_{t+1} = G(s_t, a_t) ---
+            action_tensor = torch.tensor([[action]], device=s_t.device, dtype=torch.long)
+            s_hat_tp1 = model.dynamics(s_t, action_tensor)
+
+            if i == 0:
+                latent_logs.append({
+                    "step": step,
+                    "action": int(action),
+                    "reward": float(info['raw_reward']),
+                    "s_t": s_t[0].detach().cpu().numpy(),          # (C_lat, H_lat, W_lat)
+                    "s_tp1": s_tp1[0].detach().cpu().numpy(),
+                    "s_hat_tp1": s_hat_tp1[0].detach().cpu().numpy(),
+                })
 
             # log
             ep_ori_rewards[i] += info['raw_reward']
@@ -183,9 +208,26 @@ def eval(agent, model, n_episodes, save_path, config, max_steps=None, use_pb=Fal
             j += 1
         writer.close()
 
+    if len(latent_logs) > 0 and save_path is not None:
+        latents_path = save_path / f"latents_{config.env.game}_steps_{step}.npz"
+        # Turn list-of-dicts into a dict-of-arrays for easy loading
+        actions = [entry["action"] for entry in latent_logs]
+        rewards_arr = [entry["reward"] for entry in latent_logs]
+        s_t_arr = np.stack([entry["s_t"] for entry in latent_logs], axis=0)         # (T, C, H, W)
+        s_tp1_arr = np.stack([entry["s_tp1"] for entry in latent_logs], axis=0)
+        s_hat_tp1_arr = np.stack([entry["s_hat_tp1"] for entry in latent_logs], axis=0)
+
+        np.savez_compressed(
+            latents_path,
+            actions=np.array(actions, dtype=np.int64),
+            rewards=np.array(rewards_arr, dtype=np.float32),
+            s_t=s_t_arr.astype(np.float32),
+            s_tp1=s_tp1_arr.astype(np.float32),
+            s_hat_tp1=s_hat_tp1_arr.astype(np.float32),
+        )
+        print(f"Saved latent logs to {latents_path}")
+
     return ep_ori_rewards
-
-
 
 if __name__=='__main__':
     main()
