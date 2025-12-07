@@ -1,0 +1,76 @@
+start 0 train worker...
+env=Atari, game=Pong, |A|=6, top_m=4, N=16
+wandb_name=Pong-Pong
+[2025-11-22 16:00:20,925][wandb.sdk.lib.retry][INFO] - Retry attempt failed:
+Traceback (most recent call last):
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/urllib3/connection.py", line 199, in _new_conn
+    sock = connection.create_connection(
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/urllib3/util/connection.py", line 60, in create_connection
+    for res in socket.getaddrinfo(host, port, family, socket.SOCK_STREAM):
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/socket.py", line 930, in getaddrinfo
+    for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+socket.gaierror: [Errno -2] Name or service not known
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/urllib3/connectionpool.py", line 789, in urlopen
+    response = self._make_request(
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/urllib3/connectionpool.py", line 490, in _make_request
+    raise new_e
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/urllib3/connectionpool.py", line 466, in _make_request
+    self._validate_conn(conn)
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/urllib3/connectionpool.py", line 1095, in _validate_conn
+    conn.connect()
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/urllib3/connection.py", line 693, in connect
+    self.sock = sock = self._new_conn()
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/urllib3/connection.py", line 206, in _new_conn
+    raise NameResolutionError(self.host, self, e) from e
+urllib3.exceptions.NameResolutionError: <urllib3.connection.HTTPSConnection object at 0x145fd8041340>: Failed to resolve 'api.wandb.ai' ([Errno -2] Name or service not known)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/requests/adapters.py", line 667, in send
+    resp = conn.urlopen(
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/urllib3/connectionpool.py", line 843, in urlopen
+    retries = retries.increment(
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='api.wandb.ai', port=443): Max retries exceeded with url: /graphql (Caused by NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x145fd8041340>: Failed to resolve 'api.wandb.ai' ([Errno -2] Name or service not known)"))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/wandb/sdk/lib/retry.py", line 131, in __call__
+    result = self._call_fn(*args, **kwargs)
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/wandb/sdk/internal/internal_api.py", line 285, in execute
+    return self.client.execute(*args, **kwargs)  # type: ignore
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/wandb/vendor/gql-0.2.0/wandb_gql/client.py", line 52, in execute
+    result = self._get_result(document, *args, **kwargs)
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/wandb/vendor/gql-0.2.0/wandb_gql/client.py", line 60, in _get_result
+    return self.transport.execute(document, *args, **kwargs)
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/wandb/sdk/lib/gql_request.py", line 55, in execute
+    request = self.session.post(self.url, **post_args)
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/requests/sessions.py", line 637, in post
+    return self.request("POST", url, data=data, json=json, **kwargs)
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/home/cb4835/miniconda3/envs/ezv2/lib/python3.8/site-packages/requests/adapters.py", line 700, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPSConnectionPool(host='api.wandb.ai', port=443): Max retries exceeded with url: /graphql (Caused by NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x145fd8041340>: Failed to resolve 'api.wandb.ai' ([Errno -2] Name or service not known)"))
+[2025-11-22 16:01:22,664][urllib3.connectionpool][WARNING] - Retrying (Retry(total=2, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x145fd1cd4d30>: Failed to resolve 'o151352.ingest.sentry.io' ([Errno -2] Name or service not known)")': /api/4504800232407040/envelope/
+[2025-11-22 16:01:22,665][urllib3.connectionpool][WARNING] - Retrying (Retry(total=1, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x145fd8041ee0>: Failed to resolve 'o151352.ingest.sentry.io' ([Errno -2] Name or service not known)")': /api/4504800232407040/envelope/
+[2025-11-22 16:01:22,665][urllib3.connectionpool][WARNING] - Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x145fd8041c10>: Failed to resolve 'o151352.ingest.sentry.io' ([Errno -2] Name or service not known)")': /api/4504800232407040/envelope/
+[2025-11-22 16:01:22,666][urllib3.connectionpool][WARNING] - Retrying (Retry(total=2, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x145fd1a8c3d0>: Failed to resolve 'o151352.ingest.sentry.io' ([Errno -2] Name or service not known)")': /api/4504800232407040/envelope/
+[2025-11-22 16:01:22,667][urllib3.connectionpool][WARNING] - Retrying (Retry(total=1, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x145fd1a8c580>: Failed to resolve 'o151352.ingest.sentry.io' ([Errno -2] Name or service not known)")': /api/4504800232407040/envelope/
+[2025-11-22 16:01:22,667][urllib3.connectionpool][WARNING] - Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x145fd1a8c730>: Failed to resolve 'o151352.ingest.sentry.io' ([Errno -2] Name or service not known)")': /api/4504800232407040/envelope/
+Problem at: ez/train.py 66 start_ddp_trainer
+[2025-11-22 16:01:24,585][urllib3.connectionpool][WARNING] - Retrying (Retry(total=2, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x145fd1a8cf40>: Failed to resolve 'o151352.ingest.sentry.io' ([Errno -2] Name or service not known)")': /api/4504800232407040/envelope/
+[2025-11-22 16:01:24,586][urllib3.connectionpool][WARNING] - Retrying (Retry(total=1, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x145fd1ab2130>: Failed to resolve 'o151352.ingest.sentry.io' ([Errno -2] Name or service not known)")': /api/4504800232407040/envelope/
+[2025-11-22 16:01:24,586][urllib3.connectionpool][WARNING] - Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x145fd1ab22e0>: Failed to resolve 'o151352.ingest.sentry.io' ([Errno -2] Name or service not known)")': /api/4504800232407040/envelope/
+[2025-11-22 16:01:24,587][urllib3.connectionpool][WARNING] - Retrying (Retry(total=2, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x145fd1ab28e0>: Failed to resolve 'o151352.ingest.sentry.io' ([Errno -2] Name or service not known)")': /api/4504800232407040/envelope/
+[2025-11-22 16:01:24,587][urllib3.connectionpool][WARNING] - Retrying (Retry(total=1, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x145fd1ab2a90>: Failed to resolve 'o151352.ingest.sentry.io' ([Errno -2] Name or service not known)")': /api/4504800232407040/envelope/
+[2025-11-22 16:01:24,588][urllib3.connectionpool][WARNING] - Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x145fd1ab2c40>: Failed to resolve 'o151352.ingest.sentry.io' ([Errno -2] Name or service not known)")': /api/4504800232407040/envelope/
