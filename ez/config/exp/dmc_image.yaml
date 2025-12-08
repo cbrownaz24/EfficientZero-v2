@@ -138,6 +138,15 @@ model:
   random_action_num: 12
   random_type: std   # std, normal, pink, OU
 
+  use_mini_stu_dynamics: False  # Toggle between original and MiniSTU-based dynamics
+  mini_stu:
+    sequence_length: 5           # T: length of action history buffer (note: num_filters in library must equal this)
+    use_mlp: True                # Whether to use MLP for nonlinear transformations
+    mlp_hidden_dim: null         # Hidden dimension for MLP (null = output_dim * 2)
+    mlp_num_layers: 2            # Number of MLP layers
+    mlp_dropout: 0.1             # Dropout rate for MLP
+    mlp_activation: 'gelu'       # Activation: 'relu', 'gelu', or 'tanh'
+
   reward_support:
     range: [-2, 2]
     scale: 0.01

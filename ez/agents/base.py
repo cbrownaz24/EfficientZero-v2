@@ -28,6 +28,7 @@ from ez.utils.format import get_ddp_model_weights, DiscreteSupport, symexp
 from ez.utils.loss import kl_loss, cosine_similarity_loss, continuous_loss, symlog_loss, Value_loss
 from ez.data.trajectory import GameTrajectory
 from ez.data.augmentation import Transforms
+from ez.utils.action_history import ActionHistoryBuffer
 
 def DDP_setup(**kwargs):
     # set master nod
@@ -459,11 +460,33 @@ class Agent:
         policy_entropy_loss -= entropy_loss
 
         prev_value_prefixes = torch.zeros_like(policy_loss)
+        
+        # Initialize action history buffer for MiniSTU if enabled
+        action_history_buffer = None
+        if self.config.model.use_mini_stu_dynamics:
+            action_dim = 1 if self.config.env.env != 'DMC' and self.config.env.env != 'Gym' else action_batch.shape[-1]
+            action_history_buffer = ActionHistoryBuffer(
+                batch_size=batch_size,
+                sequence_length=self.config.model.mini_stu.sequence_length,
+                action_dim=action_dim,
+                is_continuous=self.config.env.env in ['DMC', 'Gym'],
+                device='cuda'
+            )
+        
         # unroll k steps recurrently
         with autocast():
             for step_i in range(unroll_steps):
                 mask = mask_batch[:, step_i]
-                states, value_prefixes, values, policies, reward_hidden = model.recurrent_inference(states, action_batch[:, step_i], reward_hidden, training=True)
+                
+                # Push action to history buffer if using MiniSTU
+                action_history = None
+                if action_history_buffer is not None:
+                    action_history_buffer.push(action_batch[:, step_i])
+                    action_history = action_history_buffer.get_history()
+                
+                states, value_prefixes, values, policies, reward_hidden = model.recurrent_inference(
+                    states, action_batch[:, step_i], reward_hidden, training=True, action_history=action_history
+                )
 
                 beg_index = image_channel * step_i
                 end_index = image_channel * (step_i + n_stack)

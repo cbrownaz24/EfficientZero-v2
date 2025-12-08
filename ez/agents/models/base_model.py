@@ -103,12 +103,6 @@ class RepresentationNetwork(nn.Module):
 # Predict next hidden states given current states and actions
 class DynamicsNetwork(nn.Module):
     def __init__(self, num_blocks, num_channels, action_space_size, is_continuous=False, action_embedding=False, action_embedding_dim=32):
-        """
-        Dynamics network
-        :param num_blocks: int, number of res blocks
-        :param num_channels: int, channels of hidden states
-        :param action_space_size: int, action space size
-        """
         super().__init__()
         self.is_continuous = is_continuous
         self.action_embedding = action_embedding

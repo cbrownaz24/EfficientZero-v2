@@ -79,8 +79,43 @@ class EZDMCImageAgent(Agent):
         representation_model = RepresentationNetwork(self.input_shape, self.num_blocks, self.num_channels, self.down_sample)
         is_continuous = (self.config.env.env == "DMC")
         value_output_size = self.config.model.value_support.size if self.config.model.value_support.type != 'symlog' else 1
-        dynamics_model = DynamicsNetwork(self.num_blocks, self.num_channels, self.action_space_size, is_continuous,
-                                         action_embedding=self.config.model.action_embedding, action_embedding_dim=self.action_embedding_dim)
+        
+        # Build dynamics model (original or MiniSTU-based)
+        if self.config.model.use_mini_stu_dynamics:
+            from ez.agents.models.mini_stu_dynamics import MiniSTUDynamicsNetwork, DynamicsNetworkWrapper
+            
+            mini_stu_dynamics = MiniSTUDynamicsNetwork(
+                num_blocks=self.num_blocks,
+                num_channels=self.num_channels,
+                action_space_size=self.action_space_size,
+                state_shape=state_shape,
+                sequence_length=self.config.model.mini_stu.sequence_length,
+                is_continuous=is_continuous,
+                action_embedding=self.config.model.action_embedding,
+                action_embedding_dim=self.action_embedding_dim,
+                use_mlp=self.config.model.mini_stu.use_mlp,
+                mlp_hidden_dim=self.config.model.mini_stu.mlp_hidden_dim,
+            )
+            
+            # Also create original dynamics for potential fallback
+            original_dynamics = DynamicsNetwork(
+                self.num_blocks, self.num_channels, self.action_space_size, is_continuous,
+                action_embedding=self.config.model.action_embedding, 
+                action_embedding_dim=self.action_embedding_dim
+            )
+            
+            dynamics_model = DynamicsNetworkWrapper(
+                use_mini_stu=True,
+                original_dynamics=original_dynamics,
+                mini_stu_dynamics=mini_stu_dynamics
+            )
+        else:
+            dynamics_model = DynamicsNetwork(
+                self.num_blocks, self.num_channels, self.action_space_size, is_continuous,
+                action_embedding=self.config.model.action_embedding, 
+                action_embedding_dim=self.action_embedding_dim
+            )
+        
         value_policy_model = ValuePolicyNetwork(self.num_blocks, self.num_channels, self.reduced_channels, flatten_size,
                                                      self.fc_layers, value_output_size,
                                                      self.action_space_size * 2, self.init_zero, is_continuous,

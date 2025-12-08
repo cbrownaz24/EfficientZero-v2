@@ -45,7 +45,7 @@ priority:
 train:
   load_model_path: ''
   batch_size: 256
-  training_steps: 100000        # 100 * 1000
+  training_steps: 100000       # 100 * 1000
   offline_training_steps: 20000 # 20 * 1000
   start_transitions: 2000       # 2 * 1000
 
@@ -89,7 +89,7 @@ data:
   buffer_size: 1000000      # 1 * 1000 * 1000
   total_transitions: 100000 # 100 * 1000
   top_transitions: 2e5
-  trajectory_size: 400
+  trajectory_size: 40
   save_video: False
   save_as_dataset: False
 
@@ -131,6 +131,15 @@ model:
   lstm_hidden_size: 512
   lstm_horizon_len: 5
   policy_loss_type: reanalyze  # policy_gradient or reanalyze
+
+  use_mini_stu_dynamics: True  # Toggle between original and MiniSTU-based dynamics
+  mini_stu:
+    sequence_length: 5           # T: length of action history buffer (note: num_filters in library must equal this)
+    use_mlp: True                # Whether to use MLP for nonlinear transformations
+    mlp_hidden_dim: null         # Hidden dimension for MLP (null = output_dim * 2)
+    mlp_num_layers: 2            # Number of MLP layers
+    mlp_dropout: 0.1             # Dropout rate for MLP
+    mlp_activation: 'gelu'       # Activation: 'relu', 'gelu', or 'tanh'
 
   reward_support:
     range: [-300, 300]

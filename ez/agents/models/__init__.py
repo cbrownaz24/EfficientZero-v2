@@ -39,6 +39,8 @@ class EfficientZero(nn.Module):
                 use state normalization for encoded state
             value_prefix: bool
                 predict value prefix instead of reward
+            action_history_buffer: ActionHistoryBuffer (optional)
+                buffer for maintaining action history for MiniSTU dynamics
         """
         super().__init__()
 
@@ -52,6 +54,7 @@ class EfficientZero(nn.Module):
         self.state_norm = kwargs.get('state_norm')
         self.value_prefix = kwargs.get('value_prefix')
         self.v_num = config.train.v_num
+        self.action_history_buffer = kwargs.get('action_history_buffer', None)
 
     def do_representation(self, obs):
         state = self.representation_model(obs)
@@ -60,8 +63,18 @@ class EfficientZero(nn.Module):
 
         return state
 
-    def do_dynamics(self, state, action):
-        next_state = self.dynamics_model(state, action)
+    def do_dynamics(self, state, action, action_history=None):
+        # Check if dynamics model supports action history (MiniSTU-based)
+        if hasattr(self.dynamics_model, 'forward') and action_history is not None:
+            # Try to pass action_history
+            try:
+                next_state = self.dynamics_model(state, action, action_history)
+            except TypeError:
+                # Fallback if dynamics model doesn't support action_history
+                next_state = self.dynamics_model(state, action)
+        else:
+            next_state = self.dynamics_model(state, action)
+        
         if self.state_norm:
             next_state = normalize_state(next_state)
 
@@ -111,8 +124,8 @@ class EfficientZero(nn.Module):
         return state, output_values, policy
 
 
-    def recurrent_inference(self, state, action, reward_hidden, training=False):
-        next_state = self.do_dynamics(state, action)
+    def recurrent_inference(self, state, action, reward_hidden, training=False, action_history=None):
+        next_state = self.do_dynamics(state, action, action_history)
         value_prefix, reward_hidden = self.do_reward_prediction(next_state, reward_hidden)
         values, policy = self.do_value_policy_prediction(next_state)
         if training:

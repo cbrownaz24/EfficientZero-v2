@@ -1,6 +1,10 @@
 import os
 import dmc2gym
-from gym.wrappers import Monitor
+try:
+    from gym.wrappers import Monitor
+except ImportError:
+    # gym >= 0.22.0 removed Monitor, use RecordVideo or skip
+    Monitor = None
 from .gym import GymWrapper
 from .atari import AtariWrapper
 from .dmc import DMCWrapper
@@ -102,7 +106,7 @@ def make_atari(game_name, seed, save_path=None, **kwargs):
     env = TimeLimit(env, max_episode_steps=max_episode_steps)
 
     # save video to given
-    if save_path:
+    if save_path and Monitor is not None:
         env = Monitor(env, directory=save_path, force=True)
 
     # your wrapper
@@ -125,7 +129,7 @@ def make_gym(game_name, seed, save_path=None, **kwargs):
     env.seed(seed)
 
     # save video to given
-    if save_path:
+    if save_path and Monitor is not None:
         env = Monitor(env, directory=save_path, force=True)
 
     env = GymWrapper(env, obs_to_string=obs_to_string)
@@ -175,7 +179,7 @@ def make_dmc(game_name, seed, save_path=None, **kwargs):
     env = TimeLimit(env, max_episode_steps=max_episode_steps)
 
     # save video to given
-    if save_path:
+    if save_path and Monitor is not None:
         env = Monitor(env, directory=save_path, force=True)
 
     # your wrapper
