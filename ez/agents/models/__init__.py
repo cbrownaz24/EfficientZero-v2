@@ -124,8 +124,18 @@ class EfficientZero(nn.Module):
         return state, output_values, policy
 
 
-    def recurrent_inference(self, state, action, reward_hidden, training=False, action_history=None):
-        next_state = self.do_dynamics(state, action, action_history)
+    def recurrent_inference(self, state, action, reward_hidden, training=False, action_history=None, 
+                          use_world_model=False, current_state=None):
+        # Support both classical and World Model interfaces
+        if use_world_model and hasattr(self.dynamics_model, 'world_model') and self.dynamics_model.world_model is not None:
+            # World Model interface: state is obs_sequence, action is action_sequence
+            obs_sequence = state
+            action_sequence = action
+            next_state = self.dynamics_model.world_model(obs_sequence, action_sequence, current_state)
+        else:
+            # Classical interface
+            next_state = self.do_dynamics(state, action, action_history)
+        
         value_prefix, reward_hidden = self.do_reward_prediction(next_state, reward_hidden)
         values, policy = self.do_value_policy_prediction(next_state)
         if training:

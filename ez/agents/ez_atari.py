@@ -91,15 +91,17 @@ class EZAtariAgent(Agent):
 
         representation_model = RepresentationNetwork(self.input_shape, self.num_blocks, self.num_channels, self.down_sample)
 
-        # Build dynamics model (original or MiniSTU-based)
+        # Build dynamics model (original or MiniSTU World Model)
         if self.config.model.use_mini_stu_dynamics:
-            from ez.agents.models.mini_stu_dynamics import MiniSTUDynamicsNetwork, DynamicsNetworkWrapper
+            from ez.agents.models.mini_stu_dynamics import MiniSTUWorldModel, DynamicsNetworkWrapper
             
-            mini_stu_dynamics = MiniSTUDynamicsNetwork(
+            world_model = MiniSTUWorldModel(
                 num_blocks=self.num_blocks,
                 num_channels=self.num_channels,
                 action_space_size=self.action_space_size,
                 state_shape=state_shape,
+                observation_shape=self.input_shape,
+                representation_net=representation_model,
                 sequence_length=self.config.model.mini_stu.sequence_length,
                 is_continuous=False,
                 action_embedding=self.action_embedding,
@@ -108,7 +110,7 @@ class EZAtariAgent(Agent):
                 mlp_hidden_dim=self.config.model.mini_stu.mlp_hidden_dim,
             )
             
-            # Also create original dynamics for potential fallback
+            # Create original dynamics as fallback
             original_dynamics = DynamicsNetwork(
                 self.num_blocks, self.num_channels, self.action_space_size,
                 action_embedding=self.action_embedding, 
@@ -118,7 +120,8 @@ class EZAtariAgent(Agent):
             dynamics_model = DynamicsNetworkWrapper(
                 use_mini_stu=True,
                 original_dynamics=original_dynamics,
-                mini_stu_dynamics=mini_stu_dynamics
+                mini_stu_dynamics=None,  # No longer using deprecated version
+                world_model=world_model
             )
         else:
             dynamics_model = DynamicsNetwork(

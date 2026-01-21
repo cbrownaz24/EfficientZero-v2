@@ -415,7 +415,7 @@ class CyMCTS(MCTS):
 
 
     def search(self, model, batch_size, root_states, root_values, root_policy_logits,
-               use_gumble_noise=True, temperature=1.0, verbose=0, **kwargs):
+               use_gumble_noise=True, temperature=1.0, verbose=0, buffer_managers=None, **kwargs):
         # preparation
         # Node.set_static_attributes(self.discount, self.num_actions)  # set static parameters of MCTS
         # set root nodes for the batch
@@ -438,6 +438,18 @@ class CyMCTS(MCTS):
         reward_hidden_c_pool = [reward_hidden[0]]
         reward_hidden_h_pool = [reward_hidden[1]]
 
+        # Initialize imaginary buffers for world model planning (MiniSTU)
+        if buffer_managers is not None:
+            for i, manager in enumerate(buffer_managers):
+                try:
+                    # Get current ground truth states for this environment
+                    gt_states = manager.get_gt_encoded_states(model.representation_model)
+                    # Start planning phase with imaginary buffer
+                    manager.start_planning(gt_states)
+                except RuntimeError:
+                    # Buffer not yet filled, skip this env
+                    pass
+
         # set gumble noise (during training)
         if use_gumble_noise:
             gumble_noises = np.random.gumbel(0, 1, (batch_size, self.num_actions)) #* temperature
@@ -458,6 +470,17 @@ class CyMCTS(MCTS):
         # search for N iterations
         mcts_info = {}
         for simulation_idx in range(self.num_simulations):
+            # Reset imaginary buffers at start of each simulation
+            if buffer_managers is not None:
+                for i, manager in enumerate(buffer_managers):
+                    try:
+                        # Get current ground truth states
+                        gt_states = manager.get_gt_encoded_states(model.representation_model)
+                        # Reset imaginary buffer for next simulation
+                        manager.reset_imagination(gt_states)
+                    except RuntimeError:
+                        pass
+            
             current_states = []
             hidden_states_c_reward = []
             hidden_states_h_reward = []
@@ -511,6 +534,17 @@ class CyMCTS(MCTS):
 
             # save to database
             state_pool.append(next_states)
+            
+            # Update imaginary buffers with predicted states (MiniSTU world model planning)
+            if buffer_managers is not None:
+                for i, manager in enumerate(buffer_managers):
+                    try:
+                        # Push predicted state to imaginary buffer for this environment
+                        manager.imagine_step(next_states[i])
+                    except (RuntimeError, IndexError):
+                        # Buffer not ready or index mismatch, skip
+                        pass
+            
             # change value prefix to reward
             reset_idx = (np.array(search_lens) % self.lstm_horizon_len == 0)
             if self.value_prefix:

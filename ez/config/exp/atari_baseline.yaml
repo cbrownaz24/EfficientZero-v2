@@ -132,9 +132,9 @@ model:
   lstm_horizon_len: 5
   policy_loss_type: reanalyze  # policy_gradient or reanalyze
 
-  use_mini_stu_dynamics: True  # Toggle between original and MiniSTU-based dynamics
+  use_mini_stu_dynamics: False   # Toggle between original and MiniSTU-based dynamics
   mini_stu:
-    sequence_length: 20           # T: length of action history buffer (note: num_filters in library must equal this)
+    sequence_length: 20          # T: length of action history buffer (note: num_filters in library must equal this)
     use_mlp: True                # Whether to use MLP for nonlinear transformations
     mlp_hidden_dim: null         # Hidden dimension for MLP (null = output_dim * 2)
     mlp_num_layers: 2            # Number of MLP layers
@@ -163,3 +163,4 @@ actors:
 wandb:
   project: 'ez-v2-release'
   tag: 'Atari'
+
