@@ -1,6 +1,6 @@
-name: ezv2-flash
+name: ezv2
 channels:
   - defaults
 dependencies:
-  - python=3.11
-prefix: /home/cb4835/miniconda3/envs/ezv2-flash
+  - python=3.8
+prefix: /home/cb4835/miniconda3/envs/ezv2
