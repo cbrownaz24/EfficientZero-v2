@@ -31,6 +31,8 @@ from ez.eval import eval
 @hydra.main(config_path='./config', config_name='config', version_base='1.1')
 def main(config):
     if config.exp_config is not None:
+        # Add this line before the merge:
+        OmegaConf.set_struct(config, False)
         exp_config = OmegaConf.load(config.exp_config)
         config = OmegaConf.merge(config, exp_config)
 

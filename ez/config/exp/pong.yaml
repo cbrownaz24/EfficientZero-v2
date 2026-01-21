@@ -111,6 +111,7 @@ mcts:
 
 # model architecture
 model:
+  use_mini_stu_dynamics: False
   noisy_net: False
   action_embedding: True
   action_embedding_dim: 16
