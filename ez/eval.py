@@ -8,6 +8,7 @@ import sys
 sys.path.append(os.getcwd())
 
 import time
+import math
 import torch
 import ray
 import copy
@@ -29,6 +30,7 @@ from ez.envs import make_envs
 from ez.utils.format import formalize_obs_lst, DiscreteSupport, prepare_obs_lst, symexp, profile
 from ez.mcts.cy_mcts import Gumbel_MCTS
 from ez.utils.distribution import SquashedNormal, TruncatedNormal
+from ez.utils.latent_buffer import LatentStateActionBuffer
 
 @hydra.main(config_path="./config", config_name='config', version_base='1.1')
 def main(config):
@@ -89,6 +91,26 @@ def eval(agent, model, n_episodes, save_path, config, max_steps=None, use_pb=Fal
     # set infinity trajectory size
     [traj.set_inf_len() for traj in game_trajs]
 
+    # --- Initialize latent buffers for SpectralDynamicsNetwork ---
+    seq_len = config.model.spectral_dynamics.sequence_length
+    if config.env.image_based:
+        if config.model.down_sample:
+            state_shape = (config.model.num_channels,
+                           math.ceil(config.env.obs_shape[1] / 16),
+                           math.ceil(config.env.obs_shape[2] / 16))
+        else:
+            state_shape = (config.model.num_channels,
+                           config.env.obs_shape[1],
+                           config.env.obs_shape[2])
+    else:
+        # State-based: hidden state is a flat vector
+        state_shape = (config.model.hidden_shape,)
+    action_dim = 1 if config.env.env == 'Atari' else config.env.action_space_size
+    latent_buffers = [
+        LatentStateActionBuffer(seq_len, state_shape, action_dim, device='cuda')
+        for _ in range(n_episodes)
+    ]
+
     # begin to evaluate
     step = 0
     frames = [[] for _ in range(n_episodes)]
@@ -108,6 +130,11 @@ def eval(agent, model, n_episodes, save_path, config, max_steps=None, use_pb=Fal
 
         values = values.detach().cpu().numpy().flatten()
 
+        # Push root latent states into latent buffers (state only, action not yet known)
+        for i in range(n_episodes):
+            if not dones[i]:
+                latent_buffers[i].push_state_only(states[i])
+
 
         # tree search for policies
         tree = mcts.names[config.mcts.language](
@@ -121,10 +148,12 @@ def eval(agent, model, n_episodes, save_path, config, max_steps=None, use_pb=Fal
         if config.env.env == 'Atari':
             if config.mcts.use_gumbel:
                 r_values, r_policies, best_actions, _ = tree.search(model, n_episodes, states, values, policies,
-                                                                    use_gumble_noise=False, verbose=verbose)
+                                                                    use_gumble_noise=False, verbose=verbose,
+                                                                    latent_buffers=latent_buffers)
             else:
                 r_values, r_policies, best_actions, _ = tree.search_ori_mcts(model, n_episodes, states, values, policies,
-                                                                                use_noise=False)
+                                                                                use_noise=False,
+                                                                                latent_buffers=latent_buffers)
         else:
             r_values, r_policies, best_actions, _, _, _ = tree.search_continuous(
                     model, n_episodes, states, values, policies,
@@ -142,6 +171,12 @@ def eval(agent, model, n_episodes, save_path, config, max_steps=None, use_pb=Fal
             # rewards[i].append(reward)
             rewards[i].append(info['raw_reward'])
             dones[i] = done
+
+            # Record the played action in the persistent latent buffer
+            act_tensor = torch.tensor([action], device='cuda').float()
+            if act_tensor.shape[0] != action_dim:
+                act_tensor = act_tensor[:action_dim]
+            latent_buffers[i].action_buffer[-1] = act_tensor
 
             # save data to trajectory buffer
             game_trajs[i].store_search_results(values[i], r_values[i], r_policies[i])

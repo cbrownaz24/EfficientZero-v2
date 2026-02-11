@@ -10,15 +10,13 @@ import numpy as np
 import math
 
 from .base import MCTS
-# import sys
-# sys.path.append('/workspace/EZ-Codebase')
-# # import ez.mcts.ctree.cytree as tree
 from ez.mcts.ctree import cytree as tree
 from ez.mcts.ori_ctree import cytree as ori_tree
 from ez.mcts.ctree_v2 import cytree as tree2
 from torch.cuda.amp import autocast as autocast
 from ez.utils.format import DiscreteSupport, symexp, pad_and_mask
 from ez.utils.distribution import SquashedNormal, TruncatedNormal, ContDist
+from ez.utils.latent_buffer import LatentStateActionBuffer
 import colorednoise as cn
 
 class CyMCTS(MCTS):
@@ -298,7 +296,7 @@ class CyMCTS(MCTS):
         return action_pos
 
     def search_ori_mcts(self, model, batch_size, root_states, root_values, root_policy_logits,
-                        use_noise=True, temperature=1.0, verbose=0, is_reanalyze=False, **kwargs):
+                        use_noise=True, temperature=1.0, verbose=0, is_reanalyze=False, latent_buffers=None, **kwargs):
         # preparation
         # set dirichley noise (during training)
         if use_noise:
@@ -307,11 +305,8 @@ class CyMCTS(MCTS):
         else:
             noises = np.zeros((batch_size, self.num_actions))
         noises = noises.tolist()
-        # Node.set_static_attributes(self.discount, self.num_actions)  # set static parameters of MCTS
-        # set root nodes for the batch
         roots = ori_tree.Roots(batch_size, self.num_actions, self.num_simulations)
         roots.prepare(self.explore_frac, noises, [0. for _ in range(batch_size)], root_policy_logits.tolist())
-        # save the min and max value of the tree nodes
         value_min_max_lst = ori_tree.MinMaxStatsList(batch_size)
         value_min_max_lst.set_delta(self.value_minmax_delta)
 
@@ -324,12 +319,16 @@ class CyMCTS(MCTS):
         # index of states
         state_pool = [root_states]
         hidden_state_index_x = 0
-        # 1 x batch x 64
         reward_hidden_c_pool = [reward_hidden[0]]
         reward_hidden_h_pool = [reward_hidden[1]]
 
+        # --- Latent buffer pool for SpectralDynamicsNetwork ---
+        buffer_pool = {}
+        if latent_buffers is not None:
+            for iy in range(batch_size):
+                buffer_pool[(0, iy)] = latent_buffers[iy].clone()
+
         assert batch_size == len(root_states) == len(root_values)
-        # expand the roots and update the statistics
 
         self.verbose = verbose
         if self.verbose:
@@ -350,7 +349,6 @@ class CyMCTS(MCTS):
                 self.log('Tree:', verbose=2)
                 roots.print_tree()
 
-            # select action for the roots
             hidden_state_index_x_lst, hidden_state_index_y_lst, last_actions = ori_tree.batch_traverse(roots, self.c_base, self.c_init, self.discount, value_min_max_lst, results)
             search_lens = results.get_search_len()
 
@@ -364,19 +362,58 @@ class CyMCTS(MCTS):
             hidden_states_h_reward = torch.stack(hidden_states_h_reward).unsqueeze(0)
             last_actions = torch.from_numpy(np.asarray(last_actions)).cuda().long().unsqueeze(1)
 
+            # --- Build state/action sequences for SpectralDynamicsNetwork ---
+            state_seqs = None
+            action_seqs = None
+            child_buffers = []
+            if latent_buffers is not None:
+                seq_bufs = []
+                for ptr, (ix, iy) in enumerate(zip(hidden_state_index_x_lst, hidden_state_index_y_lst)):
+                    parent_buf = buffer_pool.get((ix, iy))
+                    if parent_buf is not None:
+                        child_buf = parent_buf.clone()
+                        child_buf.push(state_pool[ix][iy], last_actions[ptr])
+                        child_buffers.append(child_buf)
+                        seq_bufs.append(child_buf)
+                    else:
+                        child_buffers.append(None)
+                        seq_bufs.append(None)
+
+                state_seq_list = []
+                action_seq_list = []
+                for buf in seq_bufs:
+                    if buf is not None:
+                        state_seq_list.append(buf.get_state_sequence())
+                        action_seq_list.append(buf.get_action_sequence())
+                    else:
+                        fallback = [b for b in seq_bufs if b is not None][0]
+                        state_seq_list.append(torch.zeros_like(fallback.get_state_sequence()))
+                        action_seq_list.append(torch.zeros_like(fallback.get_action_sequence()))
+                state_seqs = torch.stack(state_seq_list)
+                action_seqs = torch.stack(action_seq_list)
+
             # inference state, reward, value, policy given the current state
             reward_hidden = (hidden_states_c_reward, hidden_states_h_reward)
 
             next_states, next_value_prefixes, next_values, next_logits, reward_hidden = self.update_statistics(
-                prediction=True,                                    # use model prediction instead of env simulation
-                model=model,                                        # model
-                states=current_states,                              # current states
-                actions=last_actions,                               # last actions
-                reward_hidden=reward_hidden,                        # reward hidden
+                prediction=True,
+                model=model,
+                states=current_states,
+                actions=last_actions,
+                reward_hidden=reward_hidden,
+                state_seqs=state_seqs,
+                action_seqs=action_seqs,
             )
 
             # save to database
             state_pool.append(next_states)
+
+            # Store child buffers
+            if latent_buffers is not None:
+                for iy_idx in range(len(child_buffers)):
+                    if child_buffers[iy_idx] is not None:
+                        buffer_pool[(hidden_state_index_x + 1, iy_idx)] = child_buffers[iy_idx]
+
             # change value prefix to reward
             if self.value_prefix:
                 reset_idx = (np.array(search_lens) % self.lstm_horizon_len == 0)
@@ -390,7 +427,6 @@ class CyMCTS(MCTS):
 
             hidden_state_index_x += 1
 
-            # expand the leaf node and backward for statistics update
             ori_tree.batch_back_propagate(hidden_state_index_x, self.discount, next_value_prefixes.squeeze(-1).tolist(), next_values.squeeze(-1).tolist(), next_logits.tolist(), value_min_max_lst, results, to_reset_lst)
 
         # obtain the final results and infos
@@ -415,13 +451,19 @@ class CyMCTS(MCTS):
 
 
     def search(self, model, batch_size, root_states, root_values, root_policy_logits,
-               use_gumble_noise=True, temperature=1.0, verbose=0, buffer_managers=None, **kwargs):
+               use_gumble_noise=True, temperature=1.0, verbose=0, latent_buffers=None, **kwargs):
+        """
+        Gumbel MCTS search with SpectralDynamicsNetwork.
+
+        Args:
+            latent_buffers: list[LatentStateActionBuffer] of length batch_size (one per env).
+                Each buffer holds the real latent-state/action history up to the current step.
+                During search every tree path clones the real buffer and appends imagined
+                (state, action) pairs so SpectralDynamicsNetwork gets the correct history.
+        """
         # preparation
-        # Node.set_static_attributes(self.discount, self.num_actions)  # set static parameters of MCTS
-        # set root nodes for the batch
         roots = tree.Roots(batch_size, self.num_actions, self.num_simulations, self.discount)
         roots.prepare(root_values.tolist(), root_policy_logits.tolist(), self.num_actions)
-        # save the min and max value of the tree nodes
         value_min_max_lst = tree.MinMaxStatsList(batch_size)
         value_min_max_lst.set_static_val(self.value_minmax_delta, self.c_visit, self.c_scale)
 
@@ -434,31 +476,29 @@ class CyMCTS(MCTS):
         # index of states
         state_pool = [root_states]
         hidden_state_index_x = 0
-        # 1 x batch x 64
         reward_hidden_c_pool = [reward_hidden[0]]
         reward_hidden_h_pool = [reward_hidden[1]]
 
-        # Initialize imaginary buffers for world model planning (MiniSTU)
-        if buffer_managers is not None:
-            for i, manager in enumerate(buffer_managers):
-                try:
-                    # Get current ground truth states for this environment
-                    gt_states = manager.get_gt_encoded_states(model.representation_model)
-                    # Start planning phase with imaginary buffer
-                    manager.start_planning(gt_states)
-                except RuntimeError:
-                    # Buffer not yet filled, skip this env
-                    pass
+        # --- Latent buffer pool: (ix, iy) → LatentStateActionBuffer ---
+        # Root nodes live at ix=0.  Their buffers are clones of the real persistent buffers
+        # with the root latent state already pushed.
+        buffer_pool = {}  # (ix, iy) → LatentStateActionBuffer
+        if latent_buffers is not None:
+            for iy in range(batch_size):
+                # Clone the real buffer (don't mutate it during planning)
+                buf = latent_buffers[iy].clone()
+                # The root state is already the latest state in the buffer
+                # (pushed by the caller before search), so no push needed here.
+                buffer_pool[(0, iy)] = buf
 
         # set gumble noise (during training)
         if use_gumble_noise:
-            gumble_noises = np.random.gumbel(0, 1, (batch_size, self.num_actions)) #* temperature
+            gumble_noises = np.random.gumbel(0, 1, (batch_size, self.num_actions))
         else:
             gumble_noises = np.zeros((batch_size, self.num_actions))
         gumble_noises = gumble_noises.tolist()
 
         assert batch_size == len(root_states) == len(root_values)
-        # expand the roots and update the statistics
 
         self.verbose = verbose
         if self.verbose:
@@ -466,26 +506,13 @@ class CyMCTS(MCTS):
             assert batch_size == 1
             self.log('Gumble Noise: {}'.format(gumble_noises), verbose=1)
 
-
         # search for N iterations
         mcts_info = {}
         for simulation_idx in range(self.num_simulations):
-            # Reset imaginary buffers at start of each simulation
-            if buffer_managers is not None:
-                for i, manager in enumerate(buffer_managers):
-                    try:
-                        # Get current ground truth states
-                        gt_states = manager.get_gt_encoded_states(model.representation_model)
-                        # Reset imaginary buffer for next simulation
-                        manager.reset_imagination(gt_states)
-                    except RuntimeError:
-                        pass
-            
             current_states = []
             hidden_states_c_reward = []
             hidden_states_h_reward = []
             results = tree.ResultsWrapper(batch_size)
-            # results1 = tree2.ResultsWrapper(roots1.num)
 
             self.log('Iteration {} \t'.format(simulation_idx), verbose=2, iteration_begin=True)
             if self.verbose > 1:
@@ -507,7 +534,42 @@ class CyMCTS(MCTS):
             current_states = torch.stack(current_states)
             hidden_states_c_reward = torch.stack(hidden_states_c_reward).unsqueeze(0)
             hidden_states_h_reward = torch.stack(hidden_states_h_reward).unsqueeze(0)
+            last_actions_raw = last_actions  # list of int action indices
             last_actions = torch.from_numpy(np.asarray(last_actions)).cuda().long().unsqueeze(1)
+
+            # --- Build state/action sequences for SpectralDynamicsNetwork ---
+            state_seqs = None
+            action_seqs = None
+            child_buffers = []  # will store buffers for the newly expanded children
+            if latent_buffers is not None:
+                seq_bufs = []
+                for ptr, (ix, iy) in enumerate(zip(hidden_state_index_x_lst, hidden_state_index_y_lst)):
+                    parent_buf = buffer_pool.get((ix, iy))
+                    if parent_buf is not None:
+                        child_buf = parent_buf.clone()
+                        # Push parent state and selected action into child buffer
+                        child_buf.push(state_pool[ix][iy], last_actions[ptr])
+                        child_buffers.append(child_buf)
+                        seq_bufs.append(child_buf)
+                    else:
+                        child_buffers.append(None)
+                        seq_bufs.append(None)
+
+                # Stack sequences into batched tensors for model
+                state_seq_list = []
+                action_seq_list = []
+                for buf in seq_bufs:
+                    if buf is not None:
+                        state_seq_list.append(buf.get_state_sequence())
+                        action_seq_list.append(buf.get_action_sequence())
+                    else:
+                        # Fallback: use current state repeated
+                        state_seq_list.append(torch.zeros_like(seq_bufs[0].get_state_sequence()) if seq_bufs[0] is not None
+                                              else torch.zeros(1))
+                        action_seq_list.append(torch.zeros_like(seq_bufs[0].get_action_sequence()) if seq_bufs[0] is not None
+                                               else torch.zeros(1))
+                state_seqs = torch.stack(state_seq_list)   # (B, L, C, H, W)
+                action_seqs = torch.stack(action_seq_list)  # (B, L, action_dim)
 
             # inference state, reward, value, policy given the current state
             reward_hidden = (hidden_states_c_reward, hidden_states_h_reward)
@@ -518,11 +580,13 @@ class CyMCTS(MCTS):
             }
 
             next_states, next_value_prefixes, next_values, next_logits, reward_hidden = self.update_statistics(
-                prediction=True,                                    # use model prediction instead of env simulation
-                model=model,                                        # model
-                states=current_states,                              # current states
-                actions=last_actions,                               # last actions
-                reward_hidden=reward_hidden,                        # reward hidden
+                prediction=True,
+                model=model,
+                states=current_states,
+                actions=last_actions,
+                reward_hidden=reward_hidden,
+                state_seqs=state_seqs,
+                action_seqs=action_seqs,
             )
             mcts_info[simulation_idx] = {
                 'next_states': next_states,
@@ -534,17 +598,13 @@ class CyMCTS(MCTS):
 
             # save to database
             state_pool.append(next_states)
-            
-            # Update imaginary buffers with predicted states (MiniSTU world model planning)
-            if buffer_managers is not None:
-                for i, manager in enumerate(buffer_managers):
-                    try:
-                        # Push predicted state to imaginary buffer for this environment
-                        manager.imagine_step(next_states[i])
-                    except (RuntimeError, IndexError):
-                        # Buffer not ready or index mismatch, skip
-                        pass
-            
+
+            # Store child buffers for newly expanded nodes at (hidden_state_index_x + 1, iy)
+            if latent_buffers is not None:
+                for iy_idx in range(len(child_buffers)):
+                    if child_buffers[iy_idx] is not None:
+                        buffer_pool[(hidden_state_index_x + 1, iy_idx)] = child_buffers[iy_idx]
+
             # change value prefix to reward
             reset_idx = (np.array(search_lens) % self.lstm_horizon_len == 0)
             if self.value_prefix:
@@ -561,20 +621,12 @@ class CyMCTS(MCTS):
             # expand the leaf node and backward for statistics update
             tree.batch_back_propagate(hidden_state_index_x, next_value_prefixes.squeeze(-1).tolist(), next_values.squeeze(-1).tolist(), next_logits.tolist(), value_min_max_lst, results, to_reset_lst, self.num_actions)
 
-
             # sequential halving
             if self.ready_for_next_gumble_phase(simulation_idx):
                 tree.batch_sequential_halving(roots, gumble_noises, value_min_max_lst, self.current_phase,
                                               self.current_num_top_actions)
-                # if self.current_phase == 0:
-                #     search_root_values = np.asarray(roots.get_values())
-
                 self.log('change to phase: {}, top m action -> {}'
                          ''.format(self.current_phase, self.current_num_top_actions), verbose=3)
-
-        # assert self.ready_for_next_gumble_phase(self.num_simulations)
-        # final selection
-        # tree.batch_sequential_halving(roots, gumble_noises, value_min_max_lst, self.current_phase, self.current_num_top_actions)
 
         # obtain the final results and infos
         search_root_values = np.asarray(roots.get_values())
@@ -590,7 +642,6 @@ class CyMCTS(MCTS):
                      ''.format(search_root_values[0], search_root_policies[0], search_best_actions[0]),
                      verbose=1, iteration_end=True)
 
- 
         return search_root_values, search_root_policies, search_best_actions, mcts_info
 
     def ready_for_next_gumble_phase(self, simulation_idx):
@@ -647,17 +698,23 @@ class Gumbel_MCTS(object):
             current_states = kwargs.get('states')
             last_actions = kwargs.get('actions')
             reward_hidden = kwargs.get('reward_hidden')
+            state_seqs = kwargs.get('state_seqs')
+            action_seqs = kwargs.get('action_seqs')
 
             with torch.no_grad():
                 with autocast():
-                    next_states, next_value_prefixes, next_values, next_logits, reward_hidden = \
-                        model.recurrent_inference(current_states, last_actions, reward_hidden)
+                    if state_seqs is not None and action_seqs is not None:
+                        next_states, next_value_prefixes, next_values, next_logits, reward_hidden = \
+                            model.recurrent_inference(state_seqs, action_seqs, reward_hidden)
+                    else:
+                        next_states, next_value_prefixes, next_values, next_logits, reward_hidden = \
+                            model.recurrent_inference(
+                                current_states.unsqueeze(1), last_actions.unsqueeze(1), reward_hidden
+                            )
 
             # process outputs
             next_values = next_values.detach().cpu().numpy().flatten()
             next_value_prefixes = next_value_prefixes.detach().cpu().numpy().flatten()
-            # if masks is not None:
-            #     next_states = next_states[:, -1]
             return next_states, next_value_prefixes, next_values, next_logits, reward_hidden
         else:
             # env simulation for next states

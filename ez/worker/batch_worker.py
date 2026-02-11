@@ -5,6 +5,7 @@
 
 import os
 import time
+import math
 import ray
 import torch
 import copy
@@ -23,6 +24,7 @@ from ez.utils.distribution import SquashedNormal, TruncatedNormal, ContDist
 from ez.utils.format import formalize_obs_lst, DiscreteSupport, LinearSchedule, prepare_obs_lst, allocate_gpu, profile, symexp
 from ez.data.trajectory import GameTrajectory
 from ez.mcts.cy_mcts import Gumbel_MCTS
+from ez.utils.latent_buffer import BatchLatentBuffer
 
 @ray.remote(num_gpus=0.03)
 # @ray.remote(num_gpus=0.14)
@@ -887,6 +889,26 @@ class BatchWorker(Worker):
         reward_lst = []
         value_lst = []
         temperature = self.agent.get_temperature(trained_steps=trained_steps) * np.ones((len(states), 1))
+
+        # --- Initialize BatchLatentBuffer for SpectralDynamicsNetwork unroll ---
+        seq_len = self.config.model.spectral_dynamics.sequence_length
+        if self.config.env.image_based:
+            if self.config.model.down_sample:
+                _state_shape = (self.config.model.num_channels,
+                                math.ceil(self.config.env.obs_shape[1] / 16),
+                                math.ceil(self.config.env.obs_shape[2] / 16))
+            else:
+                _state_shape = (self.config.model.num_channels,
+                                self.config.env.obs_shape[1],
+                                self.config.env.obs_shape[2])
+        else:
+            # State-based: hidden state is a flat vector
+            _state_shape = (self.config.model.hidden_shape,)
+        _action_dim = 1 if self.config.env.env == 'Atari' else self.config.env.action_space_size
+        latent_buf = BatchLatentBuffer(len(states), seq_len, _state_shape, action_dim=_action_dim, device='cuda')
+        # Push the initial state (action is zero for the first position)
+        latent_buf.push(states.detach(), torch.zeros(len(states), _action_dim, device='cuda'))
+
         for i in range(length):
             if policy == 'search':
                 tree = mcts.names[self.config.mcts.language](
@@ -923,8 +945,17 @@ class BatchWorker(Worker):
                 actions = actions.unsqueeze(1)
 
             with autocast():
+                # Push (state, action) into latent buffer for SpectralDynamicsNetwork
+                if actions.dim() == 1:
+                    actions_for_buf = actions.unsqueeze(-1)
+                else:
+                    actions_for_buf = actions
+                latent_buf.push(states.detach(), actions_for_buf)
+                state_seq = latent_buf.get_state_sequence()
+                action_seq = latent_buf.get_action_sequence()
+
                 states, value_prefixes, values, policies, reward_hidden = \
-                    self.model.recurrent_inference(states, actions, reward_hidden)
+                    self.model.recurrent_inference(state_seq, action_seq, reward_hidden)
                 values = values.squeeze().detach().cpu().numpy()
                 value_lst.append(values)
             if self.value_prefix and (i + 1) % self.lstm_horizon_len == 0:

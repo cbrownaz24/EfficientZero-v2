@@ -16,6 +16,13 @@ env:
 
 # model architecture
 model:
+  spectral_dynamics:
+    sequence_length: 20
+    use_mlp: True
+    mlp_hidden_dim: null
+    mlp_num_layers: 2
+    mlp_dropout: 0.1
+    mlp_activation: 'gelu'
 
 # wandb
 wandb:

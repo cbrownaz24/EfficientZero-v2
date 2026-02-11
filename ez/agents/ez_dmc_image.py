@@ -12,7 +12,10 @@ from omegaconf import open_dict
 from ez.envs import make_dmc
 from ez.utils.format import DiscreteSupport
 from ez.agents.models import EfficientZero
-from ez.agents.models.base_model import *
+from ez.agents.models.base_model import (
+    SpectralDynamicsNetwork, RepresentationNetwork, ValuePolicyNetwork,
+    SupportLSTMNetwork, SupportNetwork, ProjectionNetwork, ProjectionHeadNetwork
+)
 
 
 class EZDMCImageAgent(Agent):
@@ -79,8 +82,19 @@ class EZDMCImageAgent(Agent):
         representation_model = RepresentationNetwork(self.input_shape, self.num_blocks, self.num_channels, self.down_sample)
         is_continuous = (self.config.env.env == "DMC")
         value_output_size = self.config.model.value_support.size if self.config.model.value_support.type != 'symlog' else 1
-        dynamics_model = DynamicsNetwork(self.num_blocks, self.num_channels, self.action_space_size, is_continuous,
-                                         action_embedding=self.config.model.action_embedding, action_embedding_dim=self.action_embedding_dim)
+
+        # SpectralDynamicsNetwork replaces DynamicsNetwork
+        seq_len = self.config.model.spectral_dynamics.sequence_length
+        dynamics_model = SpectralDynamicsNetwork(
+            num_channels=self.num_channels,
+            action_space_size=self.action_space_size,
+            state_shape=state_shape,
+            sequence_length=seq_len,
+            is_continuous=is_continuous,
+            action_embedding=self.config.model.action_embedding,
+            action_embedding_dim=self.action_embedding_dim,
+            num_filters=seq_len,
+        )
         value_policy_model = ValuePolicyNetwork(self.num_blocks, self.num_channels, self.reduced_channels, flatten_size,
                                                      self.fc_layers, value_output_size,
                                                      self.action_space_size * 2, self.init_zero, is_continuous,

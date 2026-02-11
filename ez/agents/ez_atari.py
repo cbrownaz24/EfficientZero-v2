@@ -13,7 +13,10 @@ from omegaconf import open_dict
 from ez.envs import make_atari
 from ez.utils.format import DiscreteSupport
 from ez.agents.models import EfficientZero
-from ez.agents.models.base_model import *
+from ez.agents.models.base_model import (
+    SpectralDynamicsNetwork, RepresentationNetwork, ValuePolicyNetwork,
+    SupportNetwork, SupportLSTMNetwork, ProjectionNetwork, ProjectionHeadNetwork,
+)
 
 
 class EZAtariAgent(Agent):
@@ -91,44 +94,19 @@ class EZAtariAgent(Agent):
 
         representation_model = RepresentationNetwork(self.input_shape, self.num_blocks, self.num_channels, self.down_sample)
 
-        # Build dynamics model (original or MiniSTU World Model)
-        if self.config.model.use_mini_stu_dynamics:
-            from ez.agents.models.mini_stu_dynamics import MiniSTUWorldModel, DynamicsNetworkWrapper
-            
-            world_model = MiniSTUWorldModel(
-                num_blocks=self.num_blocks,
-                num_channels=self.num_channels,
-                action_space_size=self.action_space_size,
-                state_shape=state_shape,
-                observation_shape=self.input_shape,
-                representation_net=representation_model,
-                sequence_length=self.config.model.mini_stu.sequence_length,
-                is_continuous=False,
-                action_embedding=self.action_embedding,
-                action_embedding_dim=self.action_embedding_dim,
-                use_mlp=self.config.model.mini_stu.use_mlp,
-                mlp_hidden_dim=self.config.model.mini_stu.mlp_hidden_dim,
-            )
-            
-            # Create original dynamics as fallback
-            original_dynamics = DynamicsNetwork(
-                self.num_blocks, self.num_channels, self.action_space_size,
-                action_embedding=self.action_embedding, 
-                action_embedding_dim=self.action_embedding_dim
-            )
-            
-            dynamics_model = DynamicsNetworkWrapper(
-                use_mini_stu=True,
-                original_dynamics=original_dynamics,
-                mini_stu_dynamics=None,  # No longer using deprecated version
-                world_model=world_model
-            )
-        else:
-            dynamics_model = DynamicsNetwork(
-                self.num_blocks, self.num_channels, self.action_space_size,
-                action_embedding=self.action_embedding, 
-                action_embedding_dim=self.action_embedding_dim
-            )
+        # SpectralDynamicsNetwork is the sole dynamics model
+        seq_len = self.config.model.spectral_dynamics.sequence_length
+        num_filters = self.config.model.spectral_dynamics.get('num_filters', seq_len)
+        dynamics_model = SpectralDynamicsNetwork(
+            num_channels=self.num_channels,
+            action_space_size=self.action_space_size,
+            state_shape=state_shape,
+            sequence_length=seq_len,
+            is_continuous=False,
+            action_embedding=self.action_embedding,
+            action_embedding_dim=self.action_embedding_dim,
+            num_filters=num_filters,
+        )
 
         value_policy_model = ValuePolicyNetwork(self.num_blocks, self.num_channels, self.reduced_channels, flatten_size,
                                                      self.fc_layers, self.config.model.value_support.size,

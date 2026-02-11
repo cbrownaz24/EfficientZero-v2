@@ -25,27 +25,23 @@ class EfficientZero(nn.Module):
         Parameters
         ----------
         representation_model: nn.Module
-            represent the observations'
-        dynamics_model: nn.Module
-            dynamics model predicts the next state given the current state and action
+            represent the observations
+        dynamics_model: SpectralDynamicsNetwork
+            predicts next latent state from (state_seq, action_seq) of shape (B, L, ...)
         reward_prediction_model: nn.Module
-            predict the reward given the next state (Namely, current state and action)
-        value_prediction_model: nn.Module
-            predict the value given the state
-        policy_prediction_model: nn.Module
-            predict the policy given the state
+            predict the reward given the next state
+        value_policy_model: nn.Module
+            predict value and policy from state
+        projection_model / projection_head_model: nn.Module
+            for consistency loss projection
         kwargs: dict
-            state_norm: bool.
-                use state normalization for encoded state
-            value_prefix: bool
-                predict value prefix instead of reward
-            action_history_buffer: ActionHistoryBuffer (optional)
-                buffer for maintaining action history for MiniSTU dynamics
+            state_norm: bool  -- normalize latent states
+            value_prefix: bool -- predict value prefix instead of reward
         """
         super().__init__()
 
         self.representation_model = representation_model
-        self.dynamics_model = dynamics_model
+        self.dynamics_model = dynamics_model          # SpectralDynamicsNetwork
         self.reward_prediction_model = reward_prediction_model
         self.value_policy_model = value_policy_model
         self.projection_model = projection_model
@@ -54,34 +50,29 @@ class EfficientZero(nn.Module):
         self.state_norm = kwargs.get('state_norm')
         self.value_prefix = kwargs.get('value_prefix')
         self.v_num = config.train.v_num
-        self.action_history_buffer = kwargs.get('action_history_buffer', None)
 
     def do_representation(self, obs):
         state = self.representation_model(obs)
         if self.state_norm:
             state = normalize_state(state)
-
         return state
 
-    def do_dynamics(self, state, action, action_history=None):
-        # Check if dynamics model supports action history (MiniSTU-based)
-        if hasattr(self.dynamics_model, 'forward') and action_history is not None:
-            # Try to pass action_history
-            try:
-                next_state = self.dynamics_model(state, action, action_history)
-            except TypeError:
-                # Fallback if dynamics model doesn't support action_history
-                next_state = self.dynamics_model(state, action)
-        else:
-            next_state = self.dynamics_model(state, action)
-        
+    def do_dynamics(self, state_seq, action_seq):
+        """
+        SpectralDynamicsNetwork forward pass.
+
+        Args:
+            state_seq:  (B, L, C, H, W) or (B, L, D) -- history of latent states
+            action_seq: (B, L, action_dim) -- history of raw actions
+        Returns:
+            next_state: (B, C, H, W) or (B, D)
+        """
+        next_state = self.dynamics_model(state_seq, action_seq)
         if self.state_norm:
             next_state = normalize_state(next_state)
-
         return next_state
 
     def do_reward_prediction(self, next_state, reward_hidden=None):
-        # use the predicted state (Namely, current state + action) for reward prediction
         if self.value_prefix:
             value_prefix, reward_hidden = self.reward_prediction_model(next_state, reward_hidden)
             return value_prefix, reward_hidden
@@ -94,10 +85,7 @@ class EfficientZero(nn.Module):
         return value, policy
 
     def do_projection(self, state, with_grad=True):
-        # only the branch of proj + pred can share the gradients
         proj = self.projection_model(state)
-
-        # with grad, use proj_head
         if with_grad:
             proj = self.projection_head_model(proj)
             return proj
@@ -123,21 +111,26 @@ class EfficientZero(nn.Module):
 
         return state, output_values, policy
 
+    def recurrent_inference(self, state_seq, action_seq, reward_hidden, training=False):
+        """
+        One-step recurrent inference using SpectralDynamicsNetwork.
 
-    def recurrent_inference(self, state, action, reward_hidden, training=False, action_history=None, 
-                          use_world_model=False, current_state=None):
-        # Support both classical and World Model interfaces
-        if use_world_model and hasattr(self.dynamics_model, 'world_model') and self.dynamics_model.world_model is not None:
-            # World Model interface: state is obs_sequence, action is action_sequence
-            obs_sequence = state
-            action_sequence = action
-            next_state = self.dynamics_model.world_model(obs_sequence, action_sequence, current_state)
-        else:
-            # Classical interface
-            next_state = self.do_dynamics(state, action, action_history)
-        
+        Args:
+            state_seq:  (B, L, C, H, W)  -- sliding window of latent states
+            action_seq: (B, L, action_dim) -- sliding window of raw actions
+            reward_hidden: LSTM hidden state for value-prefix prediction
+            training: bool -- if True, return raw (un-decoded) values for loss
+
+        Returns (training=True):
+            next_state, value_prefix, values, policy, reward_hidden
+        Returns (training=False):
+            next_state, value_prefix (scalar), output_values (scalar), policy, reward_hidden
+        """
+        next_state = self.do_dynamics(state_seq, action_seq)
+
         value_prefix, reward_hidden = self.do_reward_prediction(next_state, reward_hidden)
         values, policy = self.do_value_policy_prediction(next_state)
+
         if training:
             return next_state, value_prefix, values, policy, reward_hidden
 
@@ -162,7 +155,6 @@ class EfficientZero(nn.Module):
             weights = self.reward_prediction_model.state_dict()
         else:
             weights = self.state_dict()
-
         return {k: v.cpu() for k, v in weights.items()}
 
     def set_weights(self, weights):

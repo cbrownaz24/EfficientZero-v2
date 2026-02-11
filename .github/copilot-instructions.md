@@ -23,9 +23,16 @@ EfficientZero V2 is a sample-efficient RL framework supporting discrete/continuo
 
 **Models** (`ez/agents/models/base_model.py`):
 - `RepresentationNetwork` - Encodes observations to hidden states (downsampling for images)
-- `DynamicsNetwork` - Predicts next state + reward given current state + action
+- `SpectralDynamicsNetwork` - Predicts next latent state from (state_seq, action_seq) via OSF (image-based: `(B, L, C, H, W)` → `(B, C, H, W)`)
+- `SpectralDynamicsNetwork1D` - Same as above but for flat state vectors (state-based: `(B, L, D)` → `(B, D)`)
+- `OSFPredictor` (`osf_predictor.py`) - Core spectral filtering module using Hankel eigenpairs
 - `ValuePolicyNetwork` - Outputs value & policy from hidden states
-- `EfficientZero` - Orchestrates all three networks (see `ez_atari.py` for instantiation)
+- `EfficientZero` (`__init__.py`) - Orchestrates all networks; `recurrent_inference(state_seq, action_seq, reward_hidden)`
+
+**Latent Buffers** (`ez/utils/latent_buffer.py`):
+- `LatentStateActionBuffer` - Per-env sliding window of `(seq_len, *state_shape)` states + `(seq_len, action_dim)` actions
+- `BatchLatentBuffer` - Batched version `(B, seq_len, ...)` for training unroll
+- Methods: `push()`, `push_state_only()`, `clone()`, `get_state_sequence()`, `get_action_sequence()`, `reset()`
 
 **Data Flow**:
 - `Transforms` (augmentation.py) - Applies shift/intensity augmentations in training loop
@@ -115,33 +122,44 @@ bash scripts/eval.sh
 - Coefficients configurable in domain `.yaml` files (e.g., `consistency_coeff: 5.0`)
 
 ### 7. Model Inference Phases
-- **Initial inference**: `model.initial_inference(observations)` → value, policy, (hidden state for recurrent)
-- **Recurrent inference**: `model.recurrent_inference(state, action, reward_hidden)` → next state, value prefix, value, policy
+- **Initial inference**: `model.initial_inference(observations)` → value, policy, hidden state
+- **Recurrent inference**: `model.recurrent_inference(state_seq, action_seq, reward_hidden)` → next state, value prefix, value, policy
+  - `state_seq`: `(B, L, C, H, W)` for image-based or `(B, L, D)` for state-based
+  - `action_seq`: `(B, L, action_dim)` — 1 for discrete, `action_space_size` for continuous
 - Value prefix used for planning; value is terminal estimate
 
-### 8. MiniSTU Dynamics Integration
-- **Toggle via config**: `model.use_mini_stu_dynamics: True/False` in any `config/exp/{domain}.yaml`
+### 8. SpectralDynamicsNetwork (Observation Spectral Filtering)
+- **Architecture**: Uses `OSFPredictor` with Hankel eigenpairs for spectral temporal filtering
+- **Two variants**:
+  - `SpectralDynamicsNetwork` — for image-based envs (spatial latent states `(B, L, C, H, W)`)
+  - `SpectralDynamicsNetwork1D` — for state-based envs (flat latent vectors `(B, L, D)`)
 - **Key files**: 
-  - `ez/agents/models/mini_stu_dynamics.py` - MiniSTU implementation (spectral temporal units for action sequences)
-  - `ez/utils/action_history.py` - ActionHistoryBuffer manages historical action sequences
+  - `ez/agents/models/base_model.py` - Both SpectralDynamicsNetwork variants
+  - `ez/agents/models/osf_predictor.py` - OSFPredictor core (Hankel eigenpairs, spectral filtering)
+  - `ez/utils/latent_buffer.py` - LatentStateActionBuffer / BatchLatentBuffer
 - **How it works**: 
-  - MiniSTU processes action history buffer a_{(t-T):t} instead of single (state, action)
-  - Returns predicted state s^_{t+1} from spectral transforms over action sequence
-  - Optional MLP for nonlinear transformations (configurable)
+  - Maintains sliding window of `seq_len` latent states and raw actions
+  - Action embeddings via Conv1x1 (spatial) or Linear (1D) + LayerNorm + ReLU
+  - OSFPredictor processes (action_embeddings, flattened_states) → predicted next state
+  - AR terms (J, P) for recent history + spectral terms (M, N) over Hankel eigenbasis
 - **Config options**:
   ```yaml
   model:
-    use_mini_stu_dynamics: True  # Enable MiniSTU
-    mini_stu:
-      sequence_length: 5          # T: history window
-      num_filters: 24             # Spectral filters
-      use_mlp: True               # Nonlinear transforms
-      mlp_hidden_dim: null        # (null = output_dim * 2)
+    spectral_dynamics:
+      sequence_length: 20          # T: sliding window length
+      use_mlp: True                # MLP for nonlinear transforms in OSF
+      mlp_hidden_dim: null         # (null = output_dim * 2)
+      mlp_num_layers: 2
+      mlp_dropout: 0.1
+      mlp_activation: 'gelu'
   ```
-- **Training integration**: 
-  - ActionHistoryBuffer automatically maintained during unroll loop (base.py)
-  - Fallback to original dynamics if action_history not provided
-  - Loss computation (MSE on predicted vs. actual states) remains unchanged
+- **Buffer management during self-play/MCTS**:
+  - Real `LatentStateActionBuffer` per env persists across steps
+  - Before search: `push_state_only(state)` records observed latent state
+  - During MCTS: `buffer_pool` dict maps `(ix, iy)` → cloned buffers; each simulation clones parent, pushes (state, action)
+  - After search: `buffer.action_buffer[-1] = chosen_action` records the played action
+  - Episode reset: `buffer.reset()`
+- **Training unroll**: `BatchLatentBuffer` accumulates (state, action) pairs; extracts `(B, L, ...)` sequences each step
 
 ## Important Files to Study
 
@@ -149,14 +167,16 @@ bash scripts/eval.sh
 |------|---------|
 | `ez/train.py` | Entry point; sets up Ray, DDP, workers |
 | `ez/agents/base.py` | Core training loop, model updates, loss computation |
-| `ez/workers/data_worker.py` | Trajectory collection via MCTS self-play |
-| `ez/workers/batch_worker.py` | Batch preparation (augmentation, context building) |
+| `ez/worker/data_worker.py` | Trajectory collection via MCTS self-play |
+| `ez/worker/batch_worker.py` | Batch preparation (augmentation, context building) |
 | `ez/data/replay_buffer.py` | Prioritized experience storage (Ray remote) |
-| `ez/config/exp/atari.yaml` | Complete configuration example (includes MiniSTU config) |
-| `ez/agents/models/base_model.py` | Network architecture (representation, dynamics, value-policy) |
-| `ez/agents/models/mini_stu_dynamics.py` | MiniSTU-based dynamics (spectral temporal units for action histories) |
+| `ez/config/exp/atari.yaml` | Complete configuration example |
+| `ez/agents/models/base_model.py` | Network architecture (representation, SpectralDynamics, value-policy) |
+| `ez/agents/models/osf_predictor.py` | OSFPredictor: spectral filtering with Hankel eigenpairs |
+| `ez/agents/models/__init__.py` | `EfficientZero` model class: orchestrates all sub-networks |
+| `ez/utils/latent_buffer.py` | LatentStateActionBuffer / BatchLatentBuffer for spectral dynamics |
 | `ez/utils/format.py` | Utilities: `DiscreteSupport`, `symlog/symexp`, DDP helpers |
-| `ez/utils/action_history.py` | ActionHistoryBuffer for MiniSTU temporal context |
+| `ez/mcts/cy_mcts.py` | Cython MCTS with Gumbel search + latent buffer integration |
 | `ez/mcts/ctree_v2/cytree.pyx` | Fast MCTS with Gumbel sampling (Cython) |
 
 ## Common Pitfalls

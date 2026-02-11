@@ -365,17 +365,10 @@ class Agent:
 
         obs_batch = obs_batch_raw[:, 0: n_stack * image_channel]  # obs_batch: current observation
         obs_target_batch = obs_batch_raw[:, image_channel:]       # obs_target_batch: observation of next steps
-        # if self.config.train.use_decorrelation:
-        #     obs_batch_all = copy.deepcopy(obs_batch)
-        #     for step_i in range(1, unroll_steps + 1):
-        #         obs_batch_all = torch.cat((obs_batch_all, obs_batch_raw[:, step_i * image_channel: (step_i + n_stack) * image_channel]), dim=0)
 
         # augmentation
         obs_batch = self.transform(obs_batch)
         obs_target_batch = self.transform(obs_target_batch)
-        # if self.config.train.use_decorrelation:
-        #     obs_batch_aug1 = self.transform(obs_batch_all)
-        #     obs_batch_aug2 = self.transform(obs_batch_all)
 
         # others to gpu
         if self.config.env.env in ['DMC', 'Gym']:
@@ -399,6 +392,23 @@ class Agent:
 
         # transform value and reward to support
         target_value_prefixes_support = DiscreteSupport.scalar_to_vector(target_value_prefixes, **self.config.model.reward_support)
+
+        # --- Spectral Dynamics: compute state_shape for buffer ---
+        seq_len = self.config.model.spectral_dynamics.sequence_length
+        if self.config.env.image_based:
+            import math
+            if self.config.model.down_sample:
+                state_shape = (self.config.model.num_channels,
+                               math.ceil(self.config.env.obs_shape[1] / 16),
+                               math.ceil(self.config.env.obs_shape[2] / 16))
+            else:
+                state_shape = (self.config.model.num_channels,
+                               self.config.env.obs_shape[1],
+                               self.config.env.obs_shape[2])
+        else:
+            # State-based: hidden state is a flat vector
+            state_shape = (self.config.model.hidden_shape,)
+        action_dim = 1 if self.config.env.env == 'Atari' else self.config.env.action_space_size
 
         with autocast():
             states, values, policies = model.initial_inference(obs_batch, training=True)
@@ -459,11 +469,32 @@ class Agent:
         policy_entropy_loss -= entropy_loss
 
         prev_value_prefixes = torch.zeros_like(policy_loss)
+
+        # --- Initialize BatchLatentBuffer for SpectralDynamicsNetwork unroll ---
+        from ez.utils.latent_buffer import BatchLatentBuffer
+        latent_buf = BatchLatentBuffer(batch_size, seq_len, state_shape, action_dim=action_dim, device='cuda')
+        # Push the initial state into the buffer (action is zero for the first position)
+        latent_buf.push(states.detach(), torch.zeros(batch_size, action_dim, device='cuda'))
+
         # unroll k steps recurrently
         with autocast():
             for step_i in range(unroll_steps):
                 mask = mask_batch[:, step_i]
-                states, value_prefixes, values, policies, reward_hidden = model.recurrent_inference(states, action_batch[:, step_i], reward_hidden, training=True)
+
+                # Push current (state, action) into the sliding window buffer
+                # action_batch[:, step_i] shape: (B, 1) for discrete
+                current_actions = action_batch[:, step_i]
+                if current_actions.dim() == 1:
+                    current_actions = current_actions.unsqueeze(-1)
+                latent_buf.push(states.detach(), current_actions)
+
+                # Get sequences for SpectralDynamicsNetwork
+                state_seq = latent_buf.get_state_sequence()   # (B, seq_len, C, H, W)
+                action_seq = latent_buf.get_action_sequence()  # (B, seq_len, action_dim)
+
+                states, value_prefixes, values, policies, reward_hidden = model.recurrent_inference(
+                    state_seq, action_seq, reward_hidden, training=True
+                )
 
                 beg_index = image_channel * step_i
                 end_index = image_channel * (step_i + n_stack)

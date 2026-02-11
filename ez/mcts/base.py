@@ -68,14 +68,24 @@ class MCTS:
             states = kwargs.get('states')
             last_actions = kwargs.get('actions')
             reward_hidden = kwargs.get('reward_hidden')
+            # SpectralDynamicsNetwork: state/action sequences
+            state_seqs = kwargs.get('state_seqs')   # (B, L, C, H, W) or None
+            action_seqs = kwargs.get('action_seqs')  # (B, L, action_dim) or None
 
             next_value_prefixes = 0
             for _ in range(self.mpc_horizon):
                 with torch.no_grad():
                     with autocast():
-                        states, pred_value_prefixes, next_values, next_logits, reward_hidden = \
-                            model.recurrent_inference(states, last_actions, reward_hidden)
-                # last_actions = self.sample_mpc_actions(next_logits)
+                        if state_seqs is not None and action_seqs is not None:
+                            # SpectralDynamicsNetwork path
+                            states, pred_value_prefixes, next_values, next_logits, reward_hidden = \
+                                model.recurrent_inference(state_seqs, action_seqs, reward_hidden)
+                        else:
+                            # Fallback (shouldn't happen with SpectralDynamics only)
+                            states, pred_value_prefixes, next_values, next_logits, reward_hidden = \
+                                model.recurrent_inference(
+                                    states.unsqueeze(1), last_actions.unsqueeze(1), reward_hidden
+                                )
                 next_value_prefixes += pred_value_prefixes
 
             # process outputs
@@ -83,7 +93,8 @@ class MCTS:
             next_values = next_values.detach().cpu().numpy()
 
             self.log('simulate action {}, r = {:.3f}, v = {:.3f}, logits = {}'
-                     ''.format(last_actions[0].tolist(), next_value_prefixes[0].item(), next_values[0].item(), next_logits[0].tolist()),
+                     ''.format(last_actions[0].tolist() if last_actions is not None else 'N/A',
+                               next_value_prefixes[0].item(), next_values[0].item(), next_logits[0].tolist()),
                      verbose=3)
             return states, next_value_prefixes, next_values, next_logits, reward_hidden
         else:
@@ -107,7 +118,11 @@ class MCTS:
             current_states_hidden = None
             with torch.no_grad():
                 with autocast():
-                    next_states, next_value_prefixes, next_values, next_logits, reward_hidden = model.recurrent_inference(current_states, actions[i], reward_hidden)
+                    # Wrap single state/action as length-1 sequences for SpectralDynamicsNetwork
+                    next_states, next_value_prefixes, next_values, next_logits, reward_hidden = \
+                        model.recurrent_inference(
+                            current_states.unsqueeze(1), actions[i].unsqueeze(1), reward_hidden
+                        )
 
             next_value_prefixes = next_value_prefixes.detach()
             next_values = next_values.detach()

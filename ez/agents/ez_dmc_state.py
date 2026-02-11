@@ -16,6 +16,7 @@ import numpy as np
 from ez.envs import make_dmc
 from ez.utils.format import DiscreteSupport
 from ez.agents.models import EfficientZero
+from ez.agents.models.base_model import SpectralDynamicsNetwork1D
 
 def mlp(
     input_size,
@@ -198,92 +199,9 @@ class RepresentationNetwork(nn.Module):
 
 
 # Predict next hidden states given current states and actions
-class DynamicsNetwork(nn.Module):
-    def __init__(
-        self,
-        hidden_shape,
-        action_shape,
-        num_blocks,
-        dyn_shape,
-        act_embed_shape,
-        rew_net_shape,
-        reward_support_size,
-        init_zero=False,
-        use_bn=True,
-    ):
-        """Dynamics network
-        Parameters
-        ----------
-        hidden_shape: int
-            dim of input hidden state
-        action_shape: int
-            dim of action
-        num_blocks: int
-            number of res blocks
-        dyn_shape: int
-            number of nodes of hidden layer
-        act_embed_shape: int
-            dim of action embedding
-        rew_net_shape: list
-            hidden layers of the reward prediction head (MLP head)
-        reward_support_size: int
-            dim of reward output
-        init_zero: bool
-            True -> zero initialization for the last layer of reward mlp
-        use_bn: bool
-            True -> Batch normalization
-        """
-        super().__init__()
-        self.hidden_shape = hidden_shape
-
-        self.act_linear1 = nn.Linear(action_shape, act_embed_shape)
-        self.act_ln1 = nn.LayerNorm(act_embed_shape)
-
-        self.dyn_ln_1 = nn.LayerNorm(hidden_shape + act_embed_shape)
-        self.dyn_net_1 = nn.Linear(hidden_shape + act_embed_shape, dyn_shape)
-
-        self.dyn_ln_2 = nn.LayerNorm(dyn_shape)
-        self.dyn_net_2 = nn.Linear(dyn_shape, hidden_shape)
-
-        if num_blocks > 0:
-            self.dyn_resblocks = nn.ModuleList(
-                [ImproveResidualBlock(hidden_shape, dyn_shape) for _ in range(num_blocks)]
-            )
-        else:
-            self.dyn_resblocks = nn.ModuleList([])
-
-
-    def forward(self, hidden, action, reward_hidden=None):
-
-        # action embedding
-        act_emb = self.act_linear1(action)
-        act_emb = self.act_ln1(act_emb)
-        act_emb = nn.functional.relu(act_emb)
-        # act_emb = nn.functional.tanh(act_emb)
-
-        # imporved res block 1st
-        x = self.dyn_ln_1(torch.cat((hidden, act_emb), dim=-1))
-        x = self.dyn_net_1(x)
-        x = nn.functional.relu(x)
-        x = self.dyn_net_2(x)
-
-        state = hidden + x
-
-        # residual tower for dynamic model (2nd -> num blocks)
-        for block in self.dyn_resblocks:
-            state = block(state)
-
-        # return state
-        return state
-
-    def get_dynamic_mean(self):
-
-        mean = []
-        for name, param in self.dyn_net_1.named_parameters():
-            mean += np.abs(param.detach().cpu().numpy().reshape(-1)).tolist()
-        mean = sum(mean) / len(mean)
-
-        return mean
+class _LegacyDynamicsNetwork_Removed:
+    """DynamicsNetwork removed — replaced by SpectralDynamicsNetwork1D from base_model.py"""
+    pass
 
 
 class RewardNetwork(nn.Module):
@@ -498,9 +416,16 @@ class EZDMCStateAgent(Agent):
                                                      use_bn=self.use_bn)
         value_output_size = self.config.model.value_support.size if self.config.model.value_support.type != 'symlog' else 1
         reward_output_size = self.config.model.reward_support.size if self.config.model.reward_support.type != 'symlog' else 1
-        dynamics_model = DynamicsNetwork(self.hidden_shape, self.action_space_size, self.num_blocks, self.dyn_shape,
-                                         self.act_embed_shape, self.rew_net_shape, reward_output_size,
-                                         use_bn=self.use_bn)
+
+        # SpectralDynamicsNetwork1D replaces the old DynamicsNetwork for state-based envs
+        seq_len = self.config.model.spectral_dynamics.sequence_length
+        dynamics_model = SpectralDynamicsNetwork1D(
+            hidden_shape=self.hidden_shape,
+            action_space_size=self.action_space_size,
+            sequence_length=seq_len,
+            action_embedding_dim=self.act_embed_shape,
+            num_filters=seq_len,
+        )
         value_policy_model = ValuePolicyNetwork(self.hidden_shape, self.val_net_shape, self.pi_net_shape,
                                                 self.action_space_size, value_output_size,
                                                 init_zero=self.init_zero, use_bn=self.use_bn, p_norm=self.use_p_norm,

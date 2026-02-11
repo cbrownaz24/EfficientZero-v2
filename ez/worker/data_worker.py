@@ -6,6 +6,7 @@
 import copy
 import os
 import time
+import math
 import ray
 import torch
 import numpy as np
@@ -19,7 +20,7 @@ from ez import mcts
 from ez.envs import make_envs, make_env
 from ez.utils.format import formalize_obs_lst, DiscreteSupport, allocate_gpu, prepare_obs_lst, symexp
 from ez.mcts.cy_mcts import Gumbel_MCTS
-from ez.utils.ground_truth_buffer import DualBufferManager
+from ez.utils.latent_buffer import LatentStateActionBuffer
 
 # @ray.remote(num_gpus=0.05)
 @ray.remote(num_gpus=0.05)
@@ -30,10 +31,24 @@ class DataWorker(Worker):
         self.model_update_interval = config.train.self_play_update_interval
         self.traj_pool = []
         self.pool_size = 1
-        
-        # Initialize buffers for MiniSTU world model planning
-        self.buffer_managers = None  # Will be initialized in run()
-        self.use_buffers = config.model.get('use_mini_stu_dynamics', False)
+
+        # Latent buffer config for SpectralDynamicsNetwork
+        self.latent_buffers = None  # Will be initialized in run() after first initial_inference
+        seq_len = config.model.spectral_dynamics.sequence_length
+        if config.env.image_based:
+            if config.model.down_sample:
+                self.state_shape = (config.model.num_channels,
+                                    math.ceil(config.env.obs_shape[1] / 16),
+                                    math.ceil(config.env.obs_shape[2] / 16))
+            else:
+                self.state_shape = (config.model.num_channels,
+                                    config.env.obs_shape[1],
+                                    config.env.obs_shape[2])
+        else:
+            # State-based: hidden state is a flat vector of size hidden_shape
+            self.state_shape = (config.model.hidden_shape,)
+        self.seq_len = seq_len
+        self.action_dim = 1 if config.env.env == 'Atari' else config.env.action_space_size
 
     @torch.no_grad()
     def run(self):
@@ -70,23 +85,11 @@ class DataWorker(Worker):
         stack_obs_windows, game_trajs = self.agent.init_envs(envs, max_steps=self.config.data.trajectory_size)
         prev_game_trajs = [None for _ in range(num_envs)]  # previous game trajectories (split a full game trajectory into several sub trajectories)
 
-        # Initialize buffer managers for each environment (for MiniSTU planning)
-        if self.use_buffers:
-            self.buffer_managers = []
-            for i in range(num_envs):
-                # Get observation shape from config
-                obs_shape = tuple(config.env.obs_shape)
-                manager = DualBufferManager(
-                    sequence_length=config.model.mini_stu.sequence_length,
-                    obs_shape=obs_shape,
-                    state_shape=(config.model.num_channels, 6, 6),  # Atari: 128 x 6 x 6
-                    device='cuda'
-                )
-                self.buffer_managers.append(manager)
-                
-                # Initialize buffer with first observations from stack window
-                for obs in stack_obs_windows[i]:
-                    manager.observe_frame(obs)
+        # Initialize latent buffers — they will be populated with the first latent state below
+        self.latent_buffers = [
+            LatentStateActionBuffer(self.seq_len, self.state_shape, self.action_dim, device='cuda')
+            for _ in range(num_envs)
+        ]
 
         # log data
         episode_return = [0. for _ in range(num_envs)]
@@ -130,6 +133,10 @@ class DataWorker(Worker):
             # process outputs
             values = values.detach().cpu().numpy().flatten()
 
+            # Push root latent states into persistent latent buffers (state only, action unknown yet)
+            for i in range(num_envs):
+                self.latent_buffers[i].push_state_only(states[i])
+
             if collected_transitions % 200 == 0 and self.config.model.noisy_net and self.rank == 0:
                 print('*******************************')
                 print(f'w_ep={self.model.value_policy_model.pi_net[0].weight_epsilon.mean()}')
@@ -150,15 +157,18 @@ class DataWorker(Worker):
             )
             if self.config.env.env == 'Atari':
                 if self.config.mcts.use_gumbel:
-                    # Pass buffer managers to Gumbel search for world model planning
+                    # Pass latent buffers to search for SpectralDynamicsNetwork planning
                     r_values, r_policies, best_actions, _ = tree.search(
                         self.model, num_envs, states, values, policies,
                         temperature=temperature,
-                        buffer_managers=self.buffer_managers if self.use_buffers else None
+                        latent_buffers=self.latent_buffers
                     )
                 else:
-                    r_values, r_policies, best_actions, _ = tree.search_ori_mcts(self.model, num_envs, states, values, policies,
-                                                                                    use_noise=True, temperature=temperature)
+                    r_values, r_policies, best_actions, _ = tree.search_ori_mcts(
+                        self.model, num_envs, states, values, policies,
+                        use_noise=True, temperature=temperature,
+                        latent_buffers=self.latent_buffers
+                    )
             else:
                 r_values, r_policies, best_actions, sampled_actions, best_indexes, mcts_info = tree.search_continuous(
                         self.model, num_envs, states, values, policies, temperature=temperature,
@@ -183,9 +193,14 @@ class DataWorker(Worker):
                 else:
                     game_trajs[i].snapshot_lst.append([])
 
-                # Update ground truth observation buffer for next planning iteration
-                if self.use_buffers and self.buffer_managers is not None:
-                    self.buffer_managers[i].observe_frame(obs)
+                # Update persistent latent buffer with the action actually played.
+                # The latent state was already pushed (push_state_only) before search;
+                # now we record the action that was chosen alongside it by updating the
+                # last entry's action slot.
+                act_tensor = torch.tensor([action], device='cuda').float()
+                if act_tensor.dim() == 1 and act_tensor.shape[0] != self.action_dim:
+                    act_tensor = act_tensor[:self.action_dim]
+                self.latent_buffers[i].action_buffer[-1] = act_tensor
 
                 # fresh stack windows
                 del stack_obs_windows[i][0]
@@ -236,12 +251,8 @@ class DataWorker(Worker):
                     game_trajs[i] = traj
                     prev_game_trajs[i] = None
                     
-                    # Reset buffer for new episode
-                    if self.use_buffers and self.buffer_managers is not None:
-                        self.buffer_managers[i].reset()
-                        # Re-initialize buffer with new stacked observations
-                        for obs in stacked_obs:
-                            self.buffer_managers[i].observe_frame(obs)
+                    # Reset latent buffer for new episode
+                    self.latent_buffers[i].reset()
 
                     traj_len[i] = 0
                     episode_return[i] = 0
