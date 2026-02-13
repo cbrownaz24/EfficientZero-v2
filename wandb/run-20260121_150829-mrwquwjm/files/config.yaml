@@ -1,0 +1,97 @@
+_wandb:
+    value:
+        cli_version: 0.24.0
+        e:
+            i94d4eecczxc9c0b3w52oflosvfl7z3q:
+                args:
+                    - exp_config=ez/config/exp/pong.yaml
+                codePath: ez/train.py
+                codePathLocal: ez/train.py
+                cpu_count: 240
+                cpu_count_logical: 240
+                cudaVersion: "12.8"
+                disk:
+                    /:
+                        total: "20812690710528"
+                        used: "45397204992"
+                email: connorbrown059@gmail.com
+                executable: /home/ubuntu/miniconda3/envs/ezv2/bin/python
+                git:
+                    commit: b91c11263b306cd0d02ca2de8b933bb8a57e0058
+                    remote: https://github.com/cbrownaz24/EfficientZero-v2.git
+                gpu: NVIDIA A100-SXM4-80GB
+                gpu_count: 8
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-deed0097-df87-edfe-f5ac-c62adcb58c46
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-9c27d5a1-a997-c705-7bde-9fa449ac009c
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-6a4f0323-024f-53cc-dd7b-e855f8cb7562
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-7c3ed57d-e661-4200-c838-6ee08024275d
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-fe68ae58-ff52-3b4e-321d-6fc39554687a
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-6e90d175-5d37-2754-4862-511e10f62aa9
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-83e74db9-9e4c-a74b-4645-5c7af98f440f
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-498bb603-b9dd-cf99-0ffd-6b3e4814f970
+                host: 150-136-118-73
+                memory:
+                    total: "1902324924416"
+                os: Linux-6.8.0-1040-nvidia-x86_64-with-glibc2.17
+                program: ez/train.py
+                python: CPython 3.8.20
+                root: /lambda/nfs/Jan-21-2026/EfficientZero-v2
+                startedAt: "2026-01-21T15:08:29.822834Z"
+                writerId: i94d4eecczxc9c0b3w52oflosvfl7z3q
+        m: []
+        python_version: 3.8.20
+        t:
+            "1":
+                - 1
+                - 30
+                - 41
+                - 50
+                - 79
+                - 105
+            "2":
+                - 1
+                - 30
+                - 41
+                - 50
+                - 79
+                - 105
+            "3":
+                - 13
+                - 61
+            "4": 3.8.20
+            "5": 0.24.0
+            "12": 0.24.0
+            "13": linux-x86_64
